@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIEGCM-live · Thermosphere Nowcast</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0a0f;color:#e8e8ee;
+    font-family:-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+  #wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  h1{font-weight:600;font-size:1.1rem;letter-spacing:.04em;margin:.6em 0 .2em;color:#bcd}
+  #vidbox{position:relative;max-width:96vw;max-height:82vh}
+  video{max-width:96vw;max-height:82vh;border-radius:8px;box-shadow:0 0 40px #0008;background:#000}
+  #status{margin-top:.5em;font-size:.85rem;color:#8a93a6;font-variant-numeric:tabular-nums}
+  #behind{color:#e0a14a}
+  .dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;background:#3c5;
+    margin-right:.4em;vertical-align:middle;box-shadow:0 0 6px #3c5}
+  .dot.stale{background:#e0a14a;box-shadow:0 0 6px #e0a14a}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>TIEGCM-live &middot; Thermosphere–Ionosphere Nowcast</h1>
+  <div id="vidbox"><video id="vid" muted playsinline autoplay></video></div>
+  <div id="status"><span class="dot" id="dot"></span><span id="msg">loading&hellip;</span></div>
+</div>
+<script>
+// Sequential playlist player. The manifest is an ordered list of clips (oldest
+// -> newest); we simply play them IN ORDER, advancing on each clip's end. The
+// "delay behind real-time" is produced by the PUBLISHER (it only releases clips
+// up to a lag), so the viewer needs no wall-clock logic -- that mismatch is what
+// made it stick. New clips appended to the manifest are picked up automatically;
+// at the end of the playlist we hold/loop on the newest until more arrive.
+const MANIFEST = "manifest.json";
+const POLL_MS  = 30000;                 // re-fetch manifest cadence
+
+let clips = [];        // ordered [{file, epoch, valid}]
+let curFile = null;    // filename currently playing (identity, survives manifest growth)
+const vid = document.getElementById("vid");
+const msg = document.getElementById("msg");
+const dot = document.getElementById("dot");
+
+function fmt(epoch){ return new Date(epoch*1000).toISOString().replace("T"," ").slice(0,16)+" UTC"; }
+function idxOf(file){ return clips.findIndex(c => c.file === file); }
+
+async function loadManifest(){
+  try{
+    const r = await fetch(MANIFEST + "?t=" + Date.now(), {cache:"no-store"});
+    if(!r.ok) return;
+    const m = await r.json();
+    if(Array.isArray(m.clips)) clips = m.clips.slice().sort((a,b)=>a.epoch-b.epoch);
+  }catch(e){ /* keep old list on transient failure */ }
+}
+
+function play(c){
+  if(!c) return;
+  curFile = c.file;
+  vid.src = c.file + "?t=" + Date.now();   // cache-bust so a re-released name reloads
+  vid.load();
+  vid.play().catch(()=>{});
+  msg.textContent = "valid " + fmt(c.epoch);
+  dot.className = "dot";
+}
+
+// advance to the clip AFTER the one that just finished; hold+loop on newest.
+vid.addEventListener("ended", ()=>{
+  if(!clips.length) return;
+  const i = idxOf(curFile);
+  if(i >= 0 && i < clips.length-1){
+    play(clips[i+1]);                 // next clip in the playlist
+  }else{
+    // at (or past) the newest clip -> replay it until a newer one appears
+    dot.className = "dot stale";
+    vid.currentTime = 0; vid.play().catch(()=>{});
+  }
+});
+
+// if playback ever stalls without an 'ended' (e.g. a load error), nudge it
+vid.addEventListener("error", ()=>{ setTimeout(()=>{ if(clips.length) play(clips[Math.max(0,idxOf(curFile))]||clips[0]); }, 1000); });
+
+async function tick(){
+  await loadManifest();
+  if(!clips.length){ msg.textContent = "waiting for data…"; return; }
+  if(curFile === null) play(clips[0]);         // first load -> start at oldest available
+  // if the file we were on rolled out of the window, resume at the new oldest
+  else if(idxOf(curFile) < 0) play(clips[0]);
+}
+
+tick();
+setInterval(tick, POLL_MS);
+</script>
+</body>
+</html>
